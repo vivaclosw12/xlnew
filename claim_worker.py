@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import re
 from dataclasses import dataclass
 
@@ -125,6 +126,159 @@ async def confirmation_page_detected(page):
         return False
 
 
+async def number_page_detected(page):
+    try:
+        text = (
+            await page.locator("body").inner_text()
+        ).lower()
+
+        return (
+            "pilih nomor esim" in text
+            or "nomor rekomendasi" in text
+        )
+
+    except Exception:
+        return False
+
+
+async def select_random_esim_number(page):
+    # Tunggu halaman pilihan nomor
+    deadline = (
+        asyncio.get_running_loop().time()
+        + 20
+    )
+
+    while (
+        asyncio.get_running_loop().time()
+        < deadline
+    ):
+        if await number_page_detected(page):
+            break
+
+        await asyncio.sleep(0.5)
+
+    if not await number_page_detected(page):
+        raise RuntimeError(
+            "Halaman Pilih Nomor eSIM tidak terdeteksi."
+        )
+
+    await page.wait_for_timeout(1000)
+
+    # ========================================================
+    # CARA 1 — RADIO BUTTON
+    # ========================================================
+
+    radios = page.locator(
+        "input[type='radio']:visible"
+    )
+
+    radio_count = await radios.count()
+
+    if radio_count > 0:
+        random_index = random.randrange(
+            radio_count
+        )
+
+        radio = radios.nth(
+            random_index
+        )
+
+        await radio.scroll_into_view_if_needed()
+        await radio.click()
+
+        await page.wait_for_timeout(
+            700
+        )
+
+    else:
+        # ====================================================
+        # CARA 2 — PILIH CARD BERDASARKAN NOMOR HP
+        #
+        # Contoh:
+        # 0818 2800 710
+        # 0819 9564 1757
+        # ====================================================
+
+        body = await page.locator(
+            "body"
+        ).inner_text()
+
+        numbers = re.findall(
+            r"\b08\d(?:[\s-]?\d){7,11}\b",
+            body
+        )
+
+        # Hilangkan duplicate
+        unique_numbers = []
+
+        for number in numbers:
+            cleaned = re.sub(
+                r"\s+",
+                " ",
+                number
+            ).strip()
+
+            if cleaned not in unique_numbers:
+                unique_numbers.append(
+                    cleaned
+                )
+
+        if not unique_numbers:
+            raise RuntimeError(
+                "Tidak menemukan nomor rekomendasi eSIM."
+            )
+
+        chosen_number = random.choice(
+            unique_numbers
+        )
+
+        number_text = page.get_by_text(
+            chosen_number,
+            exact=True
+        )
+
+        if await number_text.count() == 0:
+            raise RuntimeError(
+                f"Nomor {chosen_number} ditemukan "
+                "tetapi card tidak dapat diklik."
+            )
+
+        element = number_text.first
+
+        await element.scroll_into_view_if_needed()
+
+        # Coba klik teks
+        try:
+            await element.click()
+        except Exception:
+            # Coba parent card
+            parent = element.locator(
+                "xpath=.."
+            )
+
+            await parent.click()
+
+        await page.wait_for_timeout(
+            700
+        )
+
+    # ========================================================
+    # KLIK LANJUT SETELAH PILIH NOMOR
+    # ========================================================
+
+    if not await click_lanjut(page):
+        raise RuntimeError(
+            "Nomor eSIM sudah dipilih, "
+            "tetapi tombol Lanjut tidak dapat diklik."
+        )
+
+    await page.wait_for_timeout(
+        3500
+    )
+
+    return True
+
+
 async def start_claim(
     full_name,
     email,
@@ -158,6 +312,10 @@ async def start_claim(
     )
 
     try:
+        # ====================================================
+        # OPEN XL
+        # ====================================================
+
         await page.goto(
             CLAIM_URL,
             wait_until="domcontentloaded"
@@ -171,7 +329,17 @@ async def start_claim(
         except Exception:
             pass
 
-        await page.wait_for_timeout(1500)
+        await page.wait_for_timeout(
+            1500
+        )
+
+        # ====================================================
+        # FORM AWAL
+        #
+        # 0 = Nama
+        # 1 = Email
+        # 2 = WhatsApp
+        # ====================================================
 
         inputs = await get_visible_inputs(
             page
@@ -187,29 +355,49 @@ async def start_claim(
         whatsapp_input = inputs[2]
 
         await name_input.click()
-        await name_input.fill(full_name)
+        await name_input.fill(
+            full_name
+        )
 
-        await page.wait_for_timeout(250)
+        await page.wait_for_timeout(
+            250
+        )
 
         await email_input.click()
-        await email_input.fill(email)
+        await email_input.fill(
+            email
+        )
 
-        await page.wait_for_timeout(250)
+        await page.wait_for_timeout(
+            250
+        )
 
         await whatsapp_input.click()
-        await whatsapp_input.fill(whatsapp)
+        await whatsapp_input.fill(
+            whatsapp
+        )
 
         try:
-            await whatsapp_input.press("Tab")
+            await whatsapp_input.press(
+                "Tab"
+            )
         except Exception:
             pass
 
-        await page.wait_for_timeout(1000)
+        await page.wait_for_timeout(
+            1000
+        )
 
-        if not await click_lanjut(page):
+        if not await click_lanjut(
+            page
+        ):
             raise RuntimeError(
                 "BUTTON_FAIL: tombol Lanjut awal tidak dapat diklik."
             )
+
+        # ====================================================
+        # WAIT FOR CODE PAGE
+        # ====================================================
 
         deadline = (
             asyncio.get_running_loop().time()
@@ -220,11 +408,15 @@ async def start_claim(
             asyncio.get_running_loop().time()
             < deadline
         ):
-            if await confirmation_page_detected(page):
+            if await confirmation_page_detected(
+                page
+            ):
                 session.state = "WAITING_OTP"
                 return session
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(
+                0.5
+            )
 
         raise RuntimeError(
             "CODE_STAGE_FAIL: halaman Kode Konfirmasi tidak terdeteksi."
@@ -239,11 +431,15 @@ async def submit_otp(
     session,
     code
 ):
-    # Contoh valid:
-    # PHSVAR
+    # ========================================================
+    # KODE XL = 6 KARAKTER
+    #
+    # Contoh:
+    #
+    # TXVHPU
     # YONCOS
     # CKBILA
-    # ABC123
+    # ========================================================
 
     code = re.sub(
         r"[^A-Za-z0-9]",
@@ -266,7 +462,7 @@ async def submit_otp(
     )
 
     # ========================================================
-    # AMBIL 6 KOTAK
+    # AMBIL 6 KOTAK KODE
     # ========================================================
 
     inputs = page.locator(
@@ -281,51 +477,31 @@ async def submit_otp(
         )
 
     # ========================================================
-    # BERSIHKAN 6 KOTAK DULU
+    # BERSIHKAN KOTAK
     # ========================================================
 
     for i in range(6):
-        box = inputs.nth(i)
-
         try:
-            await box.fill("")
+            await inputs.nth(i).fill("")
         except Exception:
-            try:
-                await box.click()
-                await box.press("Control+A")
-                await box.press("Backspace")
-            except Exception:
-                pass
+            pass
 
     await page.wait_for_timeout(
         300
     )
 
     # ========================================================
-    # PENTING:
+    # XL AUTO-FOCUS
     #
-    # XL memindahkan fokus otomatis.
-    #
-    # Jadi:
-    #
-    # klik kotak 1 SEKALI
-    #
-    # lalu:
-    #
-    # P
-    # H
-    # S
-    # V
-    # A
-    # R
-    #
-    # diketik satu-satu.
+    # Klik kotak pertama sekali,
+    # lalu ketik karakter satu per satu.
     # ========================================================
 
-    first_box = inputs.nth(0)
+    first_box = inputs.nth(
+        0
+    )
 
     await first_box.scroll_into_view_if_needed()
-
     await first_box.click()
 
     await page.wait_for_timeout(
@@ -343,7 +519,7 @@ async def submit_otp(
         )
 
     # ========================================================
-    # VALIDASI ISI KOTAK
+    # VALIDASI ISI
     # ========================================================
 
     await page.wait_for_timeout(
@@ -355,15 +531,21 @@ async def submit_otp(
     for i in range(6):
         try:
             value = (
-                await inputs.nth(i).input_value()
+                await inputs
+                .nth(i)
+                .input_value()
             ).upper()
 
-            values.append(value)
+            values.append(
+                value
+            )
 
         except Exception:
             values.append("")
 
-    actual_code = "".join(values)
+    actual_code = "".join(
+        values
+    )
 
     if actual_code != code:
         raise RuntimeError(
@@ -371,10 +553,7 @@ async def submit_otp(
             f"Expected={code}, Actual={actual_code}"
         )
 
-    # ========================================================
-    # TRIGGER VALIDASI FORM
-    # ========================================================
-
+    # Trigger validation
     try:
         await inputs.nth(5).press(
             "Tab"
@@ -383,18 +562,16 @@ async def submit_otp(
         pass
 
     await page.wait_for_timeout(
-        1800
+        1500
     )
 
     # ========================================================
-    # TUNGGU + KLIK LANJUT
+    # KLIK LANJUT SETELAH KODE
     # ========================================================
 
-    lanjut_clicked = await click_lanjut(
+    if not await click_lanjut(
         page
-    )
-
-    if not lanjut_clicked:
+    ):
         session.state = "WAITING_OTP"
 
         return (
@@ -403,23 +580,15 @@ async def submit_otp(
         )
 
     # ========================================================
-    # TUNGGU HALAMAN BERIKUTNYA
+    # WAIT PILIH NOMOR eSIM
     # ========================================================
 
-    try:
-        await page.wait_for_load_state(
-            "networkidle",
-            timeout=10000
-        )
-    except Exception:
-        pass
-
     await page.wait_for_timeout(
-        4000
+        2500
     )
 
     # ========================================================
-    # CEK HASIL
+    # CEK KODE DITOLAK
     # ========================================================
 
     try:
@@ -449,21 +618,26 @@ async def submit_otp(
             "Silakan masukkan kode terbaru."
         )
 
-    if await confirmation_page_detected(
-        page
-    ):
-        session.state = "WAITING_OTP"
+    # ========================================================
+    # PILIH NOMOR RANDOM
+    # ========================================================
 
-        return (
-            "Kode sudah diisi dan tombol Lanjut sudah diklik, "
-            "tetapi halaman XL masih berada di tahap konfirmasi."
+    try:
+        await select_random_esim_number(
+            page
         )
 
-    session.state = "DONE"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Gagal memilih nomor eSIM: {exc}"
+        )
+
+    session.state = "NUMBER_SELECTED"
 
     return (
-        "Kode konfirmasi berhasil "
-        "dan proses XL dilanjutkan."
+        "Kode konfirmasi berhasil. "
+        "Nomor eSIM random sudah dipilih "
+        "dan tombol Lanjut sudah diklik."
     )
 
 
