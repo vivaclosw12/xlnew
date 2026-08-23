@@ -59,22 +59,18 @@ async def get_visible_inputs(page):
     ]
 
 
-async def click_first_lanjut(page):
+async def click_lanjut(page):
     candidates = [
         page.get_by_role(
             "button",
-            name=re.compile(
-                r"^\s*lanjut\s*$",
-                re.I
-            )
+            name=re.compile(r"^\s*lanjut\s*$", re.I)
         ),
-        page.locator(
-            "button"
-        ).filter(
-            has_text=re.compile(
-                r"^\s*lanjut\s*$",
-                re.I
-            )
+        page.locator("button").filter(
+            has_text=re.compile(r"^\s*lanjut\s*$", re.I)
+        ),
+        page.get_by_text(
+            "Lanjut",
+            exact=True
         ),
         page.locator(
             "button[type='submit']"
@@ -93,10 +89,13 @@ async def click_first_lanjut(page):
 
                 await button.scroll_into_view_if_needed()
 
-                for _ in range(40):
-                    if await button.is_enabled():
-                        await button.click()
-                        return True
+                for _ in range(50):
+                    try:
+                        if await button.is_enabled():
+                            await button.click()
+                            return True
+                    except Exception:
+                        pass
 
                     await page.wait_for_timeout(250)
 
@@ -108,24 +107,22 @@ async def click_first_lanjut(page):
 
 async def confirmation_page_detected(page):
     try:
-        body = (
+        text = (
             await page.locator("body").inner_text()
         ).lower()
 
-        markers = [
-            "kode konfirmasi",
-            "kirim ulang kode",
-            "kode verifikasi",
-            "verification code",
-        ]
-
-        if any(marker in body for marker in markers):
-            return True
+        return any(
+            marker in text
+            for marker in [
+                "kode konfirmasi",
+                "kirim ulang kode",
+                "kode verifikasi",
+                "verification code",
+            ]
+        )
 
     except Exception:
-        pass
-
-    return False
+        return False
 
 
 async def start_claim(
@@ -174,9 +171,7 @@ async def start_claim(
         except Exception:
             pass
 
-        await page.wait_for_timeout(
-            1500
-        )
+        await page.wait_for_timeout(1500)
 
         inputs = await get_visible_inputs(
             page
@@ -192,42 +187,26 @@ async def start_claim(
         whatsapp_input = inputs[2]
 
         await name_input.click()
-        await name_input.fill(
-            full_name
-        )
+        await name_input.fill(full_name)
 
-        await page.wait_for_timeout(
-            300
-        )
+        await page.wait_for_timeout(250)
 
         await email_input.click()
-        await email_input.fill(
-            email
-        )
+        await email_input.fill(email)
 
-        await page.wait_for_timeout(
-            300
-        )
+        await page.wait_for_timeout(250)
 
         await whatsapp_input.click()
-        await whatsapp_input.fill(
-            whatsapp
-        )
+        await whatsapp_input.fill(whatsapp)
 
         try:
-            await whatsapp_input.press(
-                "Tab"
-            )
+            await whatsapp_input.press("Tab")
         except Exception:
             pass
 
-        await page.wait_for_timeout(
-            1000
-        )
+        await page.wait_for_timeout(1000)
 
-        if not await click_first_lanjut(
-            page
-        ):
+        if not await click_lanjut(page):
             raise RuntimeError(
                 "BUTTON_FAIL: tombol Lanjut awal tidak dapat diklik."
             )
@@ -241,15 +220,11 @@ async def start_claim(
             asyncio.get_running_loop().time()
             < deadline
         ):
-            if await confirmation_page_detected(
-                page
-            ):
+            if await confirmation_page_detected(page):
                 session.state = "WAITING_OTP"
                 return session
 
-            await asyncio.sleep(
-                0.5
-            )
+            await asyncio.sleep(0.5)
 
         raise RuntimeError(
             "CODE_STAGE_FAIL: halaman Kode Konfirmasi tidak terdeteksi."
@@ -264,8 +239,8 @@ async def submit_otp(
     session,
     code
 ):
-    # Kode XL berupa 6 karakter huruf/angka.
-    # Contoh: YONCOS, CKBILA, ABC123.
+    # XL code = 6 karakter huruf/angka.
+    # Contoh: PHSVAR / YONCOS / CKBILA
     code = re.sub(
         r"[^A-Za-z0-9]",
         "",
@@ -282,13 +257,7 @@ async def submit_otp(
 
     page = session.page
 
-    await page.wait_for_timeout(
-        800
-    )
-
-    # ========================================================
-    # Ambil enam kotak kode
-    # ========================================================
+    await page.wait_for_timeout(800)
 
     inputs = page.locator(
         "input:visible"
@@ -302,153 +271,86 @@ async def submit_otp(
         )
 
     # ========================================================
-    # Isi 1 karakter per kotak
+    # 1 KOTAK = 1 KARAKTER
     #
-    # YONCOS:
-    # 1 = Y
-    # 2 = O
-    # 3 = N
-    # 4 = C
-    # 5 = O
-    # 6 = S
+    # PHSVAR:
+    # 1=P
+    # 2=H
+    # 3=S
+    # 4=V
+    # 5=A
+    # 6=R
+    #
+    # Klik manual satu-satu dan pakai keyboard event.
     # ========================================================
 
     for index in range(6):
         char = code[index]
 
-        box = inputs.nth(
-            index
-        )
+        box = inputs.nth(index)
 
         await box.scroll_into_view_if_needed()
 
+        # Klik box spesifik
         await box.click()
 
-        await page.wait_for_timeout(
-            120
-        )
+        await page.wait_for_timeout(150)
 
+        # Bersihkan value lama
         try:
-            await box.fill("")
+            await box.press("Control+A")
+            await box.press("Backspace")
         except Exception:
             try:
-                await box.press(
-                    "Control+A"
-                )
-                await box.press(
-                    "Backspace"
-                )
+                await box.fill("")
             except Exception:
                 pass
 
-        await page.wait_for_timeout(
-            80
-        )
+        await page.wait_for_timeout(100)
 
-        # Ketik satu karakter saja.
-        await box.type(
+        # Ketik lewat keyboard event
+        await page.keyboard.type(
             char,
             delay=120
         )
 
-        await page.wait_for_timeout(
-            300
+        await page.wait_for_timeout(300)
+
+        # Verifikasi value benar-benar masuk
+        try:
+            value = await box.input_value()
+
+            if value.upper() != char:
+                raise RuntimeError(
+                    f"Karakter ke-{index + 1} gagal masuk. "
+                    f"Expected={char}, Actual={value}"
+                )
+        except Exception as exc:
+            if "Expected=" in str(exc):
+                raise
+
+    # Trigger blur/change validation pada karakter terakhir
+    try:
+        await inputs.nth(5).press(
+            "Tab"
         )
+    except Exception:
+        pass
 
-    # ========================================================
-    # Tunggu frontend memvalidasi 6 karakter
-    # ========================================================
-
+    # Tunggu state React/form berubah
     await page.wait_for_timeout(
-        1500
+        1800
     )
 
     # ========================================================
-    # Cari tombol Lanjut PALING BAWAH
+    # CARI DAN KLIK LANJUT SETELAH KODE
     # ========================================================
 
-    lanjut_candidates = [
-        page.get_by_role(
-            "button",
-            name=re.compile(
-                r"^\s*lanjut\s*$",
-                re.I
-            )
-        ),
-        page.locator(
-            "button"
-        ).filter(
-            has_text=re.compile(
-                r"^\s*lanjut\s*$",
-                re.I
-            )
-        ),
-        page.locator(
-            "button[type='submit']"
-        ),
-    ]
-
-    lanjut_button = None
-
-    for locator in lanjut_candidates:
-        try:
-            count = await locator.count()
-
-            for i in range(count):
-                button = locator.nth(i)
-
-                if await button.is_visible():
-                    lanjut_button = button
-                    break
-
-            if lanjut_button is not None:
-                break
-
-        except Exception:
-            pass
-
-    if lanjut_button is None:
-        session.state = "WAITING_OTP"
-
-        return (
-            "Kode sudah masuk ke 6 kotak, "
-            "tetapi tombol Lanjut tidak ditemukan."
-        )
-
-    # ========================================================
-    # Scroll ke tombol Lanjut
-    # ========================================================
-
-    await lanjut_button.scroll_into_view_if_needed()
-
-    await page.wait_for_timeout(
-        500
+    lanjut_clicked = await click_lanjut(
+        page
     )
 
-    # ========================================================
-    # Tunggu tombol yang tadinya abu-abu menjadi aktif
-    # ========================================================
-
-    enabled = False
-
-    for _ in range(50):
-        try:
-            if (
-                await lanjut_button.is_visible()
-                and
-                await lanjut_button.is_enabled()
-            ):
-                enabled = True
-                break
-
-        except Exception:
-            pass
-
-        await page.wait_for_timeout(
-            250
-        )
-
-    if not enabled:
+    if not lanjut_clicked:
         session.state = "WAITING_OTP"
 
         return (
@@ -456,16 +358,7 @@ async def submit_otp(
             "tetapi tombol Lanjut masih belum aktif."
         )
 
-    # ========================================================
-    # Klik Lanjut setelah kode
-    # ========================================================
-
-    await lanjut_button.click()
-
-    # ========================================================
-    # Tunggu perpindahan halaman
-    # ========================================================
-
+    # Tunggu halaman berikutnya
     try:
         await page.wait_for_load_state(
             "networkidle",
@@ -479,7 +372,7 @@ async def submit_otp(
     )
 
     # ========================================================
-    # Cek error kode
+    # CEK HASIL
     # ========================================================
 
     try:
@@ -509,17 +402,11 @@ async def submit_otp(
             "Silakan masukkan kode terbaru."
         )
 
-    # ========================================================
-    # Kalau masih di halaman kode, berarti belum lanjut
-    # ========================================================
-
-    if await confirmation_page_detected(
-        page
-    ):
+    if await confirmation_page_detected(page):
         session.state = "WAITING_OTP"
 
         return (
-            "Kode sudah dimasukkan dan tombol Lanjut sudah diklik, "
+            "Kode sudah diisi dan tombol Lanjut sudah diklik, "
             "tetapi halaman XL masih berada di tahap konfirmasi."
         )
 
