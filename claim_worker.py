@@ -239,8 +239,12 @@ async def submit_otp(
     session,
     code
 ):
-    # XL code = 6 karakter huruf/angka.
-    # Contoh: PHSVAR / YONCOS / CKBILA
+    # Contoh valid:
+    # PHSVAR
+    # YONCOS
+    # CKBILA
+    # ABC123
+
     code = re.sub(
         r"[^A-Za-z0-9]",
         "",
@@ -257,7 +261,13 @@ async def submit_otp(
 
     page = session.page
 
-    await page.wait_for_timeout(800)
+    await page.wait_for_timeout(
+        800
+    )
+
+    # ========================================================
+    # AMBIL 6 KOTAK
+    # ========================================================
 
     inputs = page.locator(
         "input:visible"
@@ -271,65 +281,100 @@ async def submit_otp(
         )
 
     # ========================================================
-    # 1 KOTAK = 1 KARAKTER
-    #
-    # PHSVAR:
-    # 1=P
-    # 2=H
-    # 3=S
-    # 4=V
-    # 5=A
-    # 6=R
-    #
-    # Klik manual satu-satu dan pakai keyboard event.
+    # BERSIHKAN 6 KOTAK DULU
     # ========================================================
 
-    for index in range(6):
-        char = code[index]
+    for i in range(6):
+        box = inputs.nth(i)
 
-        box = inputs.nth(index)
-
-        await box.scroll_into_view_if_needed()
-
-        # Klik box spesifik
-        await box.click()
-
-        await page.wait_for_timeout(150)
-
-        # Bersihkan value lama
         try:
-            await box.press("Control+A")
-            await box.press("Backspace")
+            await box.fill("")
         except Exception:
             try:
-                await box.fill("")
+                await box.click()
+                await box.press("Control+A")
+                await box.press("Backspace")
             except Exception:
                 pass
 
-        await page.wait_for_timeout(100)
+    await page.wait_for_timeout(
+        300
+    )
 
-        # Ketik lewat keyboard event
+    # ========================================================
+    # PENTING:
+    #
+    # XL memindahkan fokus otomatis.
+    #
+    # Jadi:
+    #
+    # klik kotak 1 SEKALI
+    #
+    # lalu:
+    #
+    # P
+    # H
+    # S
+    # V
+    # A
+    # R
+    #
+    # diketik satu-satu.
+    # ========================================================
+
+    first_box = inputs.nth(0)
+
+    await first_box.scroll_into_view_if_needed()
+
+    await first_box.click()
+
+    await page.wait_for_timeout(
+        300
+    )
+
+    for char in code:
         await page.keyboard.type(
             char,
-            delay=120
+            delay=180
         )
 
-        await page.wait_for_timeout(300)
+        await page.wait_for_timeout(
+            250
+        )
 
-        # Verifikasi value benar-benar masuk
+    # ========================================================
+    # VALIDASI ISI KOTAK
+    # ========================================================
+
+    await page.wait_for_timeout(
+        1000
+    )
+
+    values = []
+
+    for i in range(6):
         try:
-            value = await box.input_value()
+            value = (
+                await inputs.nth(i).input_value()
+            ).upper()
 
-            if value.upper() != char:
-                raise RuntimeError(
-                    f"Karakter ke-{index + 1} gagal masuk. "
-                    f"Expected={char}, Actual={value}"
-                )
-        except Exception as exc:
-            if "Expected=" in str(exc):
-                raise
+            values.append(value)
 
-    # Trigger blur/change validation pada karakter terakhir
+        except Exception:
+            values.append("")
+
+    actual_code = "".join(values)
+
+    if actual_code != code:
+        raise RuntimeError(
+            "Kode tidak terisi sempurna. "
+            f"Expected={code}, Actual={actual_code}"
+        )
+
+    # ========================================================
+    # TRIGGER VALIDASI FORM
+    # ========================================================
+
     try:
         await inputs.nth(5).press(
             "Tab"
@@ -337,13 +382,12 @@ async def submit_otp(
     except Exception:
         pass
 
-    # Tunggu state React/form berubah
     await page.wait_for_timeout(
         1800
     )
 
     # ========================================================
-    # CARI DAN KLIK LANJUT SETELAH KODE
+    # TUNGGU + KLIK LANJUT
     # ========================================================
 
     lanjut_clicked = await click_lanjut(
@@ -354,11 +398,14 @@ async def submit_otp(
         session.state = "WAITING_OTP"
 
         return (
-            "Kode sudah masuk ke 6 kotak, "
+            "Kode sudah terisi ke 6 kotak, "
             "tetapi tombol Lanjut masih belum aktif."
         )
 
-    # Tunggu halaman berikutnya
+    # ========================================================
+    # TUNGGU HALAMAN BERIKUTNYA
+    # ========================================================
+
     try:
         await page.wait_for_load_state(
             "networkidle",
@@ -402,7 +449,9 @@ async def submit_otp(
             "Silakan masukkan kode terbaru."
         )
 
-    if await confirmation_page_detected(page):
+    if await confirmation_page_detected(
+        page
+    ):
         session.state = "WAITING_OTP"
 
         return (
@@ -413,7 +462,8 @@ async def submit_otp(
     session.state = "DONE"
 
     return (
-        "Kode konfirmasi berhasil dan proses XL dilanjutkan."
+        "Kode konfirmasi berhasil "
+        "dan proses XL dilanjutkan."
     )
 
 
