@@ -17,7 +17,8 @@ from telegram.ext import (
     filters,
 )
 
-from claim_worker import start_claim, submit_otp
+from claim_worker import start_claim, submit_otp, resend_code
+
 
 load_dotenv()
 
@@ -29,169 +30,404 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-log = logging.getLogger("xl-esim-clean")
+
+log = logging.getLogger("xl-esim-bot")
 
 ASK_NAME, ASK_EMAIL, ASK_WA, WAIT_OTP = range(4)
+
 
 @dataclass
 class Draft:
     name: str = ""
     email: str = ""
-    wa: str = ""
+    whatsapp: str = ""
     session: Optional[object] = None
+
 
 drafts = {}
 
+
 def authorized(update: Update) -> bool:
-    return ALLOWED_ID is None or (
-        update.effective_user and update.effective_user.id == ALLOWED_ID
+    if ALLOWED_ID is None:
+        return True
+
+    return (
+        update.effective_user is not None
+        and update.effective_user.id == ALLOWED_ID
     )
+
 
 def dashboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Klaim Baru", callback_data="new")],
         [
-            InlineKeyboardButton("📊 Status", callback_data="status"),
-            InlineKeyboardButton("🧹 Batalkan", callback_data="cancel"),
+            InlineKeyboardButton(
+                "⚡ Klaim Baru",
+                callback_data="new"
+            )
         ],
-        [InlineKeyboardButton("ℹ️ Bantuan", callback_data="help")],
+        [
+            InlineKeyboardButton(
+                "📊 Status",
+                callback_data="status"
+            ),
+            InlineKeyboardButton(
+                "🧹 Batalkan",
+                callback_data="cancel"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "ℹ️ Bantuan",
+                callback_data="help"
+            )
+        ],
     ])
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+def otp_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🔄 Kirim Ulang Kode",
+                callback_data="resend_code"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🧹 Batalkan",
+                callback_data="cancel"
+            )
+        ]
+    ])
+
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     if not authorized(update):
-        await update.effective_message.reply_text("Akses bot dibatasi.")
+        await update.effective_message.reply_text(
+            "Akses bot dibatasi."
+        )
         return
 
     await update.effective_message.reply_text(
         "<b>XL eSIM Claim Assistant</b>\n\n"
-        "Dashboard klaim pribadi.\n\n"
-        "1. Masukkan data\n"
-        "2. Bot mengisi halaman XL\n"
-        "3. Kode konfirmasi kamu masukkan manual\n"
-        "4. Bot melanjutkan proses\n\n"
-        "Tidak ada bypass CAPTCHA atau eligibility.",
+        "1. Masukkan Nama Lengkap\n"
+        "2. Masukkan Email\n"
+        "3. Masukkan Nomor WhatsApp\n"
+        "4. Bot membuka halaman XL\n"
+        "5. XL mengirim kode konfirmasi ke email\n"
+        "6. Kirim kode 6 karakter ke bot\n"
+        "7. Bot mengisi 1 karakter per kotak\n\n"
+        "Contoh kode:\n"
+        "<code>CKBILA</code>",
         parse_mode=ParseMode.HTML,
         reply_markup=dashboard(),
     )
 
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+
+async def callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    query = update.callback_query
+    await query.answer()
 
     if not authorized(update):
         return ConversationHandler.END
 
     uid = update.effective_user.id
+    action = query.data
 
-    if q.data == "new":
+    if action == "new":
         old = drafts.pop(uid, None)
+
         if old and old.session:
-            await old.session.close()
+            try:
+                await old.session.close()
+            except Exception:
+                pass
+
         drafts[uid] = Draft()
-        await q.message.reply_text("Kirim Nama Lengkap.")
+
+        await query.message.reply_text(
+            "👤 <b>Kirim Nama Lengkap</b>",
+            parse_mode=ParseMode.HTML,
+        )
+
         return ASK_NAME
 
-    if q.data == "status":
-        d = drafts.get(uid)
-        if not d:
-            txt = "Tidak ada proses klaim aktif."
-        elif d.session and d.session.state == "WAITING_OTP":
-            txt = "Status: menunggu kode konfirmasi."
+    if action == "status":
+        draft = drafts.get(uid)
+
+        if not draft:
+            text = "Tidak ada proses klaim aktif."
+
+        elif (
+            draft.session
+            and draft.session.state == "WAITING_OTP"
+        ):
+            text = "📩 Status: menunggu kode konfirmasi."
+
         else:
-            txt = "Status: sedang mengisi data."
-        await q.message.reply_text(txt, reply_markup=dashboard())
+            text = "⏳ Status: proses klaim sedang berjalan."
+
+        await query.message.reply_text(
+            text,
+            reply_markup=dashboard(),
+        )
+
         return ConversationHandler.END
 
-    if q.data == "cancel":
-        d = drafts.pop(uid, None)
-        if d and d.session:
-            await d.session.close()
-        await q.message.reply_text("Proses dibatalkan.", reply_markup=dashboard())
+    if action == "cancel":
+        draft = drafts.pop(uid, None)
+
+        if draft and draft.session:
+            try:
+                await draft.session.close()
+            except Exception:
+                pass
+
+        await query.message.reply_text(
+            "🧹 Proses klaim dibatalkan.",
+            reply_markup=dashboard(),
+        )
+
         return ConversationHandler.END
 
-    if q.data == "help":
-        await q.message.reply_text(
-            "Klaim Baru → Nama → Email → WhatsApp → tunggu kode → kirim kode konfirmasi dari email.",
+    if action == "help":
+        await query.message.reply_text(
+            "<b>Cara Menggunakan Bot</b>\n\n"
+            "1. Tekan Klaim Baru\n"
+            "2. Masukkan Nama Lengkap\n"
+            "3. Masukkan Email\n"
+            "4. Masukkan Nomor WhatsApp\n"
+            "5. Tunggu kode dari XL\n"
+            "6. Kirim kode konfirmasi 6 karakter\n\n"
+            "Contoh:\n"
+            "<code>CKBILA</code>\n"
+            "<code>YKZVAT</code>\n"
+            "<code>ABC123</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=dashboard(),
+        )
+
+        return ConversationHandler.END
+
+
+async def resend_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    query = update.callback_query
+    await query.answer()
+
+    uid = update.effective_user.id
+    draft = drafts.get(uid)
+
+    if not draft or not draft.session:
+        await query.message.reply_text(
+            "❌ Sesi klaim tidak tersedia.",
             reply_markup=dashboard(),
         )
         return ConversationHandler.END
 
-async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        result = await resend_code(
+            draft.session
+        )
+
+        await query.message.reply_text(
+            "🔄 " + result + "\n\n"
+            "Kirim kode baru setelah masuk ke email.",
+            reply_markup=otp_keyboard(),
+        )
+
+        return WAIT_OTP
+
+    except Exception as exc:
+        await query.message.reply_text(
+            f"❌ {str(exc)}",
+            reply_markup=otp_keyboard(),
+        )
+
+        return WAIT_OTP
+
+
+async def got_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     uid = update.effective_user.id
-    value = update.effective_message.text.strip()
-    if len(value) < 2:
-        await update.effective_message.reply_text("Nama tidak valid.")
+    name = update.effective_message.text.strip()
+
+    if len(name) < 2:
+        await update.effective_message.reply_text(
+            "❌ Nama tidak valid."
+        )
         return ASK_NAME
-    drafts[uid].name = value
-    await update.effective_message.reply_text("Kirim Email.")
+
+    drafts[uid].name = name
+
+    await update.effective_message.reply_text(
+        "📧 <b>Kirim Email</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
     return ASK_EMAIL
 
-async def got_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def got_email(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     uid = update.effective_user.id
-    value = update.effective_message.text.strip()
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
-        await update.effective_message.reply_text("Format email tidak valid.")
+    email = update.effective_message.text.strip()
+
+    if not re.fullmatch(
+        r"[^@\s]+@[^@\s]+\.[^@\s]+",
+        email
+    ):
+        await update.effective_message.reply_text(
+            "❌ Format email tidak valid."
+        )
         return ASK_EMAIL
-    drafts[uid].email = value
-    await update.effective_message.reply_text("Kirim Nomor WhatsApp. Contoh: 081234567890")
+
+    drafts[uid].email = email
+
+    await update.effective_message.reply_text(
+        "📱 <b>Kirim Nomor WhatsApp</b>\n\n"
+        "Contoh:\n"
+        "<code>081234567890</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
     return ASK_WA
 
-async def got_wa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    d = drafts[uid]
-    value = re.sub(r"[^\d+]", "", update.effective_message.text)
 
-    if not re.fullmatch(r"(?:\+62|62|0)8\d{7,12}", value):
-        await update.effective_message.reply_text("Nomor WhatsApp tidak valid.")
+async def got_whatsapp(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    uid = update.effective_user.id
+    draft = drafts[uid]
+
+    whatsapp = re.sub(
+        r"[^\d+]",
+        "",
+        update.effective_message.text
+    )
+
+    if not re.fullmatch(
+        r"(?:\+62|62|0)8\d{7,12}",
+        whatsapp
+    ):
+        await update.effective_message.reply_text(
+            "❌ Nomor WhatsApp tidak valid."
+        )
         return ASK_WA
 
-    d.wa = value
-    await update.effective_message.reply_text("⏳ Membuka halaman XL dan mengisi 3 field...")
+    draft.whatsapp = whatsapp
+
+    await update.effective_message.reply_text(
+        "⏳ Membuka halaman XL dan mengisi 3 field..."
+    )
 
     try:
-        d.session = await start_claim(d.name, d.email, d.wa)
+        draft.session = await start_claim(
+            draft.name,
+            draft.email,
+            draft.whatsapp
+        )
+
         await update.effective_message.reply_text(
             "📩 <b>Kode Konfirmasi</b>\n\n"
-            f"Cek email <code>{d.email}</code>, lalu kirim kode konfirmasi di sini.\n"
-            "Kode harus tepat 6 karakter dan boleh berupa huruf/angka.",
+            f"Cek email:\n"
+            f"<code>{draft.email}</code>\n\n"
+            "Kirim kode konfirmasi "
+            "<b>tepat 6 karakter</b>.\n\n"
+            "Kode boleh berupa huruf atau angka.\n\n"
+            "Contoh:\n"
+            "<code>CKBILA</code>",
             parse_mode=ParseMode.HTML,
+            reply_markup=otp_keyboard(),
         )
+
         return WAIT_OTP
+
     except Exception as exc:
-        log.exception("claim failed")
+        log.exception("start_claim failed")
+
         drafts.pop(uid, None)
+
         await update.effective_message.reply_text(
-            f"❌ Klaim belum bisa lanjut.\n<code>{str(exc)[:700]}</code>",
+            "❌ <b>Klaim belum bisa dilanjutkan</b>\n\n"
+            f"<code>{str(exc)[:700]}</code>",
             parse_mode=ParseMode.HTML,
+            reply_markup=dashboard(),
+        )
+
+        return ConversationHandler.END
+
+
+async def got_otp(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    uid = update.effective_user.id
+    draft = drafts.get(uid)
+
+    if not draft or not draft.session:
+        await update.effective_message.reply_text(
+            "❌ Sesi klaim tidak ditemukan.",
             reply_markup=dashboard(),
         )
         return ConversationHandler.END
 
-async def got_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    d = drafts.get(uid)
+    code = re.sub(
+        r"[^A-Za-z0-9]",
+        "",
+        update.effective_message.text
+    ).upper()
 
-    if not d or not d.session:
+    # IMPORTANT:
+    # This is NOT numeric-only OTP.
+    # Valid examples: CKBILA, YKZVAT, ABC123.
+    if not re.fullmatch(
+        r"[A-Z0-9]{6}",
+        code
+    ):
         await update.effective_message.reply_text(
-            "Sesi klaim tidak ditemukan.", reply_markup=dashboard()
+            "❌ Kode konfirmasi harus tepat "
+            "<b>6 karakter huruf/angka</b>.\n\n"
+            "Contoh:\n"
+            "<code>CKBILA</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=otp_keyboard(),
         )
-        return ConversationHandler.END
 
-    code = re.sub(r"[^A-Za-z0-9]", "", update.effective_message.text).upper()
-
-    if not re.fullmatch(r"[A-Z0-9]{6}", code):
-        await update.effective_message.reply_text(
-            "Kode konfirmasi harus tepat 6 karakter huruf/angka."
-        )
         return WAIT_OTP
 
-    await update.effective_message.reply_text("🔐 Mengirim kode konfirmasi...")
+    await update.effective_message.reply_text(
+        "🔐 Mengisi kode konfirmasi..."
+    )
 
     try:
-        result = await submit_otp(d.session, code)
+        result = await submit_otp(
+            draft.session,
+            code
+        )
 
-        if d.session.state == "WAITING_OTP":
-            await update.effective_message.reply_text("❌ " + result)
+        if draft.session.state == "WAITING_OTP":
+            await update.effective_message.reply_text(
+                "❌ " + result + "\n\n"
+                "Kirim kode terbaru atau tekan "
+                "<b>Kirim Ulang Kode</b>.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=otp_keyboard(),
+            )
+
             return WAIT_OTP
 
         await update.effective_message.reply_text(
@@ -199,60 +435,141 @@ async def got_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=dashboard(),
         )
 
-        await d.session.close()
-        drafts.pop(uid, None)
-        return ConversationHandler.END
-
-    except Exception as exc:
-        log.exception("otp failed")
-        await update.effective_message.reply_text(
-            f"❌ Kode gagal diproses.\n<code>{str(exc)[:600]}</code>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=dashboard(),
-        )
-
         try:
-            await d.session.close()
+            await draft.session.close()
         except Exception:
             pass
 
         drafts.pop(uid, None)
+
         return ConversationHandler.END
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    except Exception as exc:
+        log.exception("confirmation code failed")
+
+        await update.effective_message.reply_text(
+            "❌ <b>Kode gagal diproses</b>\n\n"
+            f"<code>{str(exc)[:600]}</code>\n\n"
+            "Kamu masih bisa kirim kode baru.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=otp_keyboard(),
+        )
+
+        return WAIT_OTP
+
+
+async def cancel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     uid = update.effective_user.id
-    d = drafts.pop(uid, None)
-    if d and d.session:
-        await d.session.close()
+    draft = drafts.pop(uid, None)
+
+    if draft and draft.session:
+        try:
+            await draft.session.close()
+        except Exception:
+            pass
+
     await update.effective_message.reply_text(
-        "Proses dibatalkan.", reply_markup=dashboard()
+        "🧹 Proses dibatalkan.",
+        reply_markup=dashboard(),
     )
+
     return ConversationHandler.END
+
 
 def main():
     if not TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN belum diisi.")
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN belum diisi."
+        )
 
-    app = Application.builder().token(TOKEN).build()
+    app = (
+        Application
+        .builder()
+        .token(TOKEN)
+        .build()
+    )
 
-    conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(callback, pattern="^(new|status|cancel|help)$")],
+    conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                callback,
+                pattern="^(new|status|cancel|help)$"
+            )
+        ],
+
         states={
-            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_name)],
-            ASK_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_email)],
-            ASK_WA: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_wa)],
-            WAIT_OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_otp)],
+            ASK_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    got_name
+                )
+            ],
+
+            ASK_EMAIL: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    got_email
+                )
+            ],
+
+            ASK_WA: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    got_whatsapp
+                )
+            ],
+
+            WAIT_OTP: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    got_otp
+                ),
+                CallbackQueryHandler(
+                    resend_callback,
+                    pattern="^resend_code$"
+                ),
+            ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+
+        fallbacks=[
+            CommandHandler(
+                "cancel",
+                cancel
+            )
+        ],
+
         allow_reentry=True,
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dashboard", start))
-    app.add_handler(conv)
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
 
-    print("XL eSIM clean bot running...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.add_handler(
+        CommandHandler(
+            "dashboard",
+            start
+        )
+    )
+
+    app.add_handler(
+        conversation
+    )
+
+    print(
+        "=== XL eSIM BOT - 6 CHARACTER ALPHANUMERIC CODE ==="
+    )
+
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
+
 
 if __name__ == "__main__":
     main()
