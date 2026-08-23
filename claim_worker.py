@@ -29,7 +29,7 @@ TIMEOUT = int(
 
 
 # ============================================================
-# CLAIM SESSION
+# SESSION
 # ============================================================
 
 @dataclass
@@ -38,11 +38,9 @@ class ClaimSession:
     browser: object
     context: object
     page: object
-
     state: str = "FORM"
 
     async def close(self):
-
         try:
             await self.context.close()
         except Exception:
@@ -60,15 +58,11 @@ class ClaimSession:
 
 
 # ============================================================
-# GET VISIBLE INPUTS
+# HELPERS
 # ============================================================
 
 async def get_visible_inputs(page):
-
-    locator = page.locator(
-        "input:visible"
-    )
-
+    locator = page.locator("input:visible")
     count = await locator.count()
 
     return [
@@ -77,43 +71,25 @@ async def get_visible_inputs(page):
     ]
 
 
-# ============================================================
-# CLICK LANJUT
-# ============================================================
-
 async def click_lanjut(page):
-
     candidates = [
         page.get_by_role(
             "button",
-            name=re.compile(
-                r"^\s*lanjut\s*$",
-                re.I
-            )
+            name=re.compile(r"^\s*lanjut\s*$", re.I)
         ),
-
         page.locator(
             "button"
         ).filter(
-            has_text=re.compile(
-                r"^\s*lanjut\s*$",
-                re.I
-            )
+            has_text=re.compile(r"^\s*lanjut\s*$", re.I)
         ),
-
         page.locator(
             "button[type='submit']"
         ),
     ]
 
     for locator in candidates:
-
         try:
-
-            count = await locator.count()
-
-            for i in range(count):
-
+            for i in range(await locator.count()):
                 button = locator.nth(i)
 
                 if not await button.is_visible():
@@ -121,18 +97,12 @@ async def click_lanjut(page):
 
                 await button.scroll_into_view_if_needed()
 
-                # Tunggu sampai tombol aktif
                 for _ in range(30):
-
                     if await button.is_enabled():
-
                         await button.click()
-
                         return True
 
-                    await page.wait_for_timeout(
-                        200
-                    )
+                    await page.wait_for_timeout(200)
 
         except Exception:
             continue
@@ -140,18 +110,10 @@ async def click_lanjut(page):
     return False
 
 
-# ============================================================
-# DETECT CONFIRMATION PAGE
-# ============================================================
-
 async def confirmation_page_detected(page):
-
     try:
-
         body = (
-            await page
-            .locator("body")
-            .inner_text()
+            await page.locator("body").inner_text()
         ).lower()
 
         markers = [
@@ -161,10 +123,7 @@ async def confirmation_page_detected(page):
             "verification code",
         ]
 
-        if any(
-            marker in body
-            for marker in markers
-        ):
+        if any(marker in body for marker in markers):
             return True
 
     except Exception:
@@ -182,7 +141,6 @@ async def start_claim(
     email,
     whatsapp
 ):
-
     pw = await async_playwright().start()
 
     browser = await pw.chromium.launch(
@@ -191,7 +149,6 @@ async def start_claim(
 
     context = await browser.new_context(
         locale="id-ID",
-
         viewport={
             "width": 1365,
             "height": 960
@@ -212,183 +169,90 @@ async def start_claim(
     )
 
     try:
-
-        # ====================================================
-        # OPEN XL
-        # ====================================================
-
         await page.goto(
             CLAIM_URL,
             wait_until="domcontentloaded"
         )
 
         try:
-
             await page.wait_for_load_state(
                 "networkidle",
                 timeout=15000
             )
-
         except Exception:
             pass
 
-        await page.wait_for_timeout(
-            1500
-        )
+        await page.wait_for_timeout(1500)
 
-
-        # ====================================================
-        # GET FORM INPUTS
-        #
-        # Screenshot XL:
-        #
+        # Halaman awal XL:
         # input 0 = Nama Lengkap
         # input 1 = Email
         # input 2 = Nomor WhatsApp
-        # ====================================================
 
-        inputs = await get_visible_inputs(
-            page
-        )
+        inputs = await get_visible_inputs(page)
 
         if len(inputs) < 3:
-
             raise RuntimeError(
-                "FORM_FAIL: "
-                f"hanya menemukan {len(inputs)} "
-                "input yang terlihat."
+                f"FORM_FAIL: hanya menemukan {len(inputs)} input."
             )
-
 
         name_input = inputs[0]
         email_input = inputs[1]
         whatsapp_input = inputs[2]
 
-
-        # ====================================================
-        # NAME
-        # ====================================================
-
+        # Nama
         await name_input.click()
+        await name_input.fill(full_name)
 
-        await name_input.fill(
-            full_name
-        )
+        await page.wait_for_timeout(300)
 
-        await page.wait_for_timeout(
-            300
-        )
-
-
-        # ====================================================
-        # EMAIL
-        # ====================================================
-
+        # Email
         await email_input.click()
+        await email_input.fill(email)
 
-        await email_input.fill(
-            email
-        )
+        await page.wait_for_timeout(300)
 
-        await page.wait_for_timeout(
-            300
-        )
-
-
-        # ====================================================
-        # WHATSAPP
-        # ====================================================
-
+        # WhatsApp
         await whatsapp_input.click()
+        await whatsapp_input.fill(whatsapp)
 
-        await whatsapp_input.fill(
-            whatsapp
-        )
+        await page.wait_for_timeout(300)
 
-        await page.wait_for_timeout(
-            300
-        )
-
-
-        # Trigger blur / React validation
+        # Trigger validation
         try:
-
-            await whatsapp_input.press(
-                "Tab"
-            )
-
+            await whatsapp_input.press("Tab")
         except Exception:
             pass
 
+        await page.wait_for_timeout(1000)
 
-        await page.wait_for_timeout(
-            1000
-        )
-
-
-        # ====================================================
-        # CLICK LANJUT
-        # ====================================================
-
-        lanjut_clicked = await click_lanjut(
-            page
-        )
-
-        if not lanjut_clicked:
-
+        if not await click_lanjut(page):
             raise RuntimeError(
-                "BUTTON_FAIL: "
-                "tombol Lanjut tidak ditemukan "
-                "atau belum aktif."
+                "BUTTON_FAIL: tombol Lanjut tidak dapat diklik."
             )
 
-
-        # ====================================================
-        # WAIT FOR CONFIRMATION PAGE
-        # ====================================================
-
+        # Tunggu halaman kode konfirmasi
         deadline = (
-            asyncio
-            .get_running_loop()
-            .time()
+            asyncio.get_running_loop().time()
             + 45
         )
 
-
         while (
-            asyncio
-            .get_running_loop()
-            .time()
+            asyncio.get_running_loop().time()
             < deadline
         ):
-
-            if await confirmation_page_detected(
-                page
-            ):
-
-                session.state = (
-                    "WAITING_OTP"
-                )
-
+            if await confirmation_page_detected(page):
+                session.state = "WAITING_OTP"
                 return session
 
-
-            await asyncio.sleep(
-                0.5
-            )
-
+            await asyncio.sleep(0.5)
 
         raise RuntimeError(
-            "CODE_STAGE_FAIL: "
-            "halaman Kode Konfirmasi "
-            "tidak terdeteksi."
+            "CODE_STAGE_FAIL: halaman Kode Konfirmasi tidak terdeteksi."
         )
 
-
     except Exception:
-
         await session.close()
-
         raise
 
 
@@ -400,18 +264,17 @@ async def submit_otp(
     session,
     code
 ):
-
-    # ========================================================
-    # NORMALIZE CODE
+    # --------------------------------------------------------
+    # XL confirmation code can contain LETTERS.
     #
-    # XL may send:
-    #
+    # Examples:
     # CKBILA
     # YKZVAT
-    # QQAYRV
+    # JYBFTI
     #
-    # Letters MUST NOT be removed.
-    # ========================================================
+    # DO NOT use \d{6}
+    # DO NOT remove letters.
+    # --------------------------------------------------------
 
     code = re.sub(
         r"[^A-Za-z0-9]",
@@ -419,353 +282,213 @@ async def submit_otp(
         code
     ).upper()
 
-
-    # Exactly 6 alphanumeric characters
-
+    # EXACTLY 6 alphanumeric characters
     if not re.fullmatch(
         r"[A-Z0-9]{6}",
         code
     ):
-
         raise ValueError(
-            "Kode konfirmasi harus tepat "
-            "6 karakter huruf/angka."
+            "Kode konfirmasi harus tepat 6 karakter huruf/angka."
         )
-
 
     page = session.page
 
+    await page.wait_for_timeout(1000)
 
     # ========================================================
-    # WAIT UNTIL CONFIRMATION PAGE READY
+    # GET SIX CODE BOXES
     # ========================================================
 
-    await page.wait_for_timeout(
-        1000
-    )
-
-
-    # ========================================================
-    # GET THE SIX CONFIRMATION BOXES
-    # ========================================================
-
-    inputs = page.locator(
-        "input:visible"
-    )
-
+    inputs = page.locator("input:visible")
     count = await inputs.count()
 
-
     if count < 6:
-
         raise RuntimeError(
-            "CODE_INPUT_FAIL: "
-            f"seharusnya ada 6 kotak, "
-            f"tetapi hanya menemukan {count}."
+            f"CODE_INPUT_FAIL: hanya menemukan {count} kotak kode."
         )
 
-
     # ========================================================
-    # IMPORTANT
+    # 1 BOX = 1 CHARACTER
     #
-    # Example:
+    # Example CKBILA:
     #
-    # CKBILA
+    # BOX 1 = C
+    # BOX 2 = K
+    # BOX 3 = B
+    # BOX 4 = I
+    # BOX 5 = L
+    # BOX 6 = A
     #
-    # BOX 1 -> C
-    # BOX 2 -> K
-    # BOX 3 -> B
-    # BOX 4 -> I
-    # BOX 5 -> L
-    # BOX 6 -> A
-    #
-    # Every box is clicked explicitly.
-    # We do NOT paste the whole code.
+    # Explicit click every box.
     # ========================================================
 
     for index in range(6):
-
-        character = code[index]
-
-        box = inputs.nth(
-            index
-        )
-
-
-        # Make sure box is visible
+        char = code[index]
+        box = inputs.nth(index)
 
         await box.scroll_into_view_if_needed()
 
-
-        # ----------------------------------------------------
-        # CLICK THIS SPECIFIC BOX
-        # ----------------------------------------------------
-
+        # Klik field satu-satu
         await box.click()
 
+        await page.wait_for_timeout(150)
 
-        await page.wait_for_timeout(
-            150
-        )
-
-
-        # ----------------------------------------------------
-        # CLEAR THIS SPECIFIC BOX
-        # ----------------------------------------------------
-
+        # Bersihkan hanya field ini
         try:
-
             await box.fill("")
-
         except Exception:
-
             try:
-
-                await box.press(
-                    "Control+A"
-                )
-
-                await box.press(
-                    "Backspace"
-                )
-
+                await box.press("Control+A")
+                await box.press("Backspace")
             except Exception:
-
                 pass
 
+        await page.wait_for_timeout(100)
 
-        await page.wait_for_timeout(
-            100
-        )
-
-
-        # ----------------------------------------------------
-        # TYPE ONLY ONE CHARACTER
-        # ----------------------------------------------------
-
+        # Ketik SATU karakter
         await box.type(
-            character,
+            char,
             delay=120
         )
 
+        # Tunggu sebelum klik kotak berikutnya
+        await page.wait_for_timeout(350)
 
-        # ----------------------------------------------------
-        # WAIT BEFORE CLICKING NEXT BOX
-        # ----------------------------------------------------
-
-        await page.wait_for_timeout(
-            350
-        )
-
+    # Tunggu frontend membaca 6 karakter
+    await page.wait_for_timeout(1000)
 
     # ========================================================
-    # GIVE FRONTEND TIME TO PROCESS CODE
-    # ========================================================
-
-    await page.wait_for_timeout(
-        1000
-    )
-
-
-    # ========================================================
-    # OPTIONAL CONFIRMATION BUTTON
-    #
-    # Some OTP interfaces submit automatically.
-    # If XL provides a button, click it.
+    # CLICK CONFIRM / VERIFY IF AVAILABLE
     # ========================================================
 
     button_clicked = False
 
-
-    button_regex = re.compile(
-        r"konfirmasi|verifikasi|lanjut",
-        re.I
-    )
-
-
     try:
-
         buttons = page.get_by_role(
             "button",
-            name=button_regex
+            name=re.compile(
+                r"konfirmasi|verifikasi|lanjut",
+                re.I
+            )
         )
 
+        for i in range(await buttons.count()):
+            button = buttons.nth(i)
 
-        button_count = await buttons.count()
-
-
-        for i in range(
-            button_count
-        ):
-
-            button = buttons.nth(
-                i
-            )
-
-
-            if not await button.is_visible():
-
-                continue
-
-
-            if not await button.is_enabled():
-
-                continue
-
-
-            await button.scroll_into_view_if_needed()
-
-            await button.click()
-
-            button_clicked = True
-
-            break
-
+            if (
+                await button.is_visible()
+                and await button.is_enabled()
+            ):
+                await button.click()
+                button_clicked = True
+                break
 
     except Exception:
-
         pass
 
-
-    # ========================================================
-    # FALLBACK SUBMIT BUTTON
-    # ========================================================
-
     if not button_clicked:
-
         try:
-
             submit_buttons = page.locator(
                 "button[type='submit']:visible"
             )
 
-
-            submit_count = (
-                await submit_buttons.count()
-            )
-
-
-            for i in range(
-                submit_count
-            ):
-
-                button = submit_buttons.nth(
-                    i
-                )
-
+            for i in range(await submit_buttons.count()):
+                button = submit_buttons.nth(i)
 
                 if (
                     await button.is_visible()
-                    and
-                    await button.is_enabled()
+                    and await button.is_enabled()
                 ):
-
                     await button.click()
-
                     button_clicked = True
-
                     break
 
-
         except Exception:
-
             pass
 
+    await page.wait_for_timeout(3500)
 
     # ========================================================
-    # WAIT FOR RESULT
-    # ========================================================
-
-    await page.wait_for_timeout(
-        3500
-    )
-
-
-    # ========================================================
-    # READ PAGE RESULT
+    # CHECK RESULT
     # ========================================================
 
     try:
-
         body_text = (
-            await page
-            .locator("body")
-            .inner_text()
+            await page.locator("body").inner_text()
         ).lower()
-
     except Exception:
-
         body_text = ""
-
-
-    # ========================================================
-    # INVALID / EXPIRED CODE
-    # ========================================================
 
     error_markers = [
         "kode salah",
         "kode tidak valid",
         "invalid code",
-        "kode kadaluarsa",
-        "kode kedaluwarsa",
-        "kode telah kedaluwarsa",
         "expired",
+        "kedaluwarsa",
+        "kadaluarsa",
     ]
-
 
     if any(
         marker in body_text
         for marker in error_markers
     ):
-
-        session.state = (
-            "WAITING_OTP"
-        )
+        session.state = "WAITING_OTP"
 
         return (
             "Kode ditolak oleh XL. "
             "Silakan masukkan kode terbaru."
         )
 
+    # Kalau masih ada tulisan kode konfirmasi,
+    # anggap belum berhasil dan tetap pertahankan session.
 
-    # ========================================================
-    # CHECK WHETHER WE ARE STILL ON CODE PAGE
-    # ========================================================
-
-    try:
-
-        still_confirmation = (
-            await confirmation_page_detected(
-                page
-            )
-        )
-
-    except Exception:
-
-        still_confirmation = False
-
-
-    if still_confirmation:
-
-        session.state = (
-            "WAITING_OTP"
-        )
+    if await confirmation_page_detected(page):
+        session.state = "WAITING_OTP"
 
         return (
-            "Kode sudah diisi ke 6 kotak, "
-            "tetapi halaman masih berada "
-            "di tahap konfirmasi."
+            "Kode sudah dimasukkan ke 6 kotak, "
+            "tetapi halaman masih berada di tahap konfirmasi."
         )
-
-
-    # ========================================================
-    # SUCCESS
-    # ========================================================
 
     session.state = "DONE"
 
-
     return (
         "Kode konfirmasi berhasil dimasukkan "
-        "dan halaman XL telah melanjutkan proses."
+        "dan proses XL dilanjutkan."
+    )
+
+
+# ============================================================
+# RESEND CODE
+# ============================================================
+
+async def resend_code(session):
+    page = session.page
+
+    try:
+        locator = page.get_by_text(
+            "Kirim Ulang Kode",
+            exact=False
+        )
+
+        for i in range(await locator.count()):
+            item = locator.nth(i)
+
+            if await item.is_visible():
+                await item.click()
+
+                await page.wait_for_timeout(1500)
+
+                session.state = "WAITING_OTP"
+
+                return (
+                    "Kode konfirmasi baru sudah diminta. "
+                    "Silakan cek email."
+                )
+
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "Tombol Kirim Ulang Kode tidak ditemukan."
     )
