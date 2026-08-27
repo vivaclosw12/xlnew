@@ -1,5 +1,6 @@
 
 import os
+import asyncio
 import random
 import re
 from dataclasses import dataclass
@@ -103,67 +104,72 @@ async def _field_by_hints(scope, hints):
 
 
 async def find_initial_form_fields(page):
-    """
-    XL sempat mengubah form sehingga mengandalkan input[0..2] tidak stabil.
-    Cari Nama/Email/WhatsApp berdasarkan semantic hints dan cek semua frame.
-    """
-    scopes = [page] + [frame for frame in page.frames if frame != page.main_frame]
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 45
+    last_diagnostics = []
 
-    for scope in scopes:
-        name_input = await _field_by_hints(
-            scope, ["Nama Lengkap", "nama lengkap", "full name", "nama"]
-        )
-        email_input = await _field_by_hints(
-            scope, ["Email", "email"]
-        )
-        whatsapp_input = await _field_by_hints(
-            scope, ["Nomor WhatsApp", "WhatsApp", "whatsapp", "nomor"]
-        )
-
-        if name_input is not None and email_input is not None and whatsapp_input is not None:
-            return name_input, email_input, whatsapp_input
-
-    # Fallback terakhir: ambil visible text-like inputs dan abaikan hidden/radio/checkbox.
-    for scope in scopes:
-        locator = scope.locator(
-            "input:visible:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit'])"
-        )
+    while loop.time() < deadline:
         try:
-            count = await locator.count()
-        except Exception:
-            count = 0
-
-        if count >= 3:
-            return locator.nth(0), locator.nth(1), locator.nth(2)
-
-    # Diagnostic agar error Telegram jauh lebih berguna saat XL ubah UI lagi.
-    diagnostics = []
-    for idx, scope in enumerate(scopes):
-        try:
-            all_inputs = scope.locator("input")
-            total = await all_inputs.count()
-            visible = 0
-            attrs = []
-            for i in range(min(total, 12)):
-                item = all_inputs.nth(i)
-                try:
-                    if await item.is_visible():
-                        visible += 1
-                    attrs.append({
-                        "type": await item.get_attribute("type"),
-                        "name": await item.get_attribute("name"),
-                        "placeholder": await item.get_attribute("placeholder"),
-                        "aria": await item.get_attribute("aria-label"),
-                    })
-                except Exception:
-                    pass
-            diagnostics.append(f"scope={idx} total={total} visible={visible} attrs={attrs}")
+            await page.evaluate("window.scrollTo(0, Math.floor(document.body.scrollHeight * 0.60))")
         except Exception:
             pass
+        await page.wait_for_timeout(500)
+
+        scopes = [page] + [frame for frame in page.frames if frame != page.main_frame]
+
+        for scope in scopes:
+            name_input = await _field_by_hints(scope, ["Nama Lengkap", "nama lengkap", "full name"])
+            email_input = await _field_by_hints(scope, ["Email", "email"])
+            whatsapp_input = await _field_by_hints(scope, ["Nomor WhatsApp", "WhatsApp", "whatsapp"])
+            if name_input is not None and email_input is not None and whatsapp_input is not None:
+                return name_input, email_input, whatsapp_input
+
+        for scope in scopes:
+            try:
+                name_input = await _first_visible(scope.locator('input[placeholder="Nama Lengkap"]'))
+                email_input = await _first_visible(scope.locator('input[placeholder="Email"]'))
+                whatsapp_input = await _first_visible(scope.locator('input[placeholder="Nomor WhatsApp"]'))
+                if name_input is not None and email_input is not None and whatsapp_input is not None:
+                    return name_input, email_input, whatsapp_input
+            except Exception:
+                pass
+
+        for scope in scopes:
+            try:
+                locator = scope.locator("input:visible:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='search'])")
+                if await locator.count() >= 3:
+                    return locator.nth(0), locator.nth(1), locator.nth(2)
+            except Exception:
+                pass
+
+        diagnostics = []
+        for idx, scope in enumerate(scopes):
+            try:
+                all_inputs = scope.locator("input")
+                total = await all_inputs.count()
+                visible = 0
+                attrs = []
+                for i in range(min(total, 15)):
+                    item = all_inputs.nth(i)
+                    try:
+                        if await item.is_visible():
+                            visible += 1
+                        attrs.append({
+                            "type": await item.get_attribute("type"),
+                            "name": await item.get_attribute("name"),
+                            "placeholder": await item.get_attribute("placeholder"),
+                            "aria": await item.get_attribute("aria-label"),
+                        })
+                    except Exception:
+                        pass
+                diagnostics.append(f"scope={idx} url={getattr(scope, 'url', '')} total={total} visible={visible} attrs={attrs}")
+            except Exception:
+                pass
+        last_diagnostics = diagnostics
+        await page.wait_for_timeout(1000)
 
     raise RuntimeError(
-        "FORM_FAIL: field Nama Lengkap / Email / Nomor WhatsApp tidak terdeteksi. "
-        + " | ".join(diagnostics)
+        "FORM_FAIL: Form XL tidak muncul setelah 45 detik. " + " | ".join(last_diagnostics)
     )
 
 
@@ -425,20 +431,33 @@ async def start_claim(
 
         await page.goto(
             CLAIM_URL,
-            wait_until="domcontentloaded"
+            wait_until="domcontentloaded",
+            timeout=60000
         )
 
         try:
             await page.wait_for_load_state(
-                "networkidle",
-                timeout=15000
+                "load",
+                timeout=30000
             )
         except Exception:
             pass
 
-        await page.wait_for_timeout(
-            1500
-        )
+        await page.wait_for_timeout(2000)
+
+        if "/esim-trial/claim" not in page.url:
+            raise RuntimeError(
+                f"PAGE_FAIL: XL redirect ke URL lain: {page.url}"
+            )
+
+        try:
+            await page.evaluate(
+                "window.scrollTo(0, Math.floor(document.body.scrollHeight * 0.60))"
+            )
+        except Exception:
+            pass
+
+        await page.wait_for_timeout(1000)
 
         # ====================================================
         # FORM AWAL
