@@ -46,6 +46,19 @@ class Draft:
 
 drafts = {}
 
+# Maksimal klaim sukses per Telegram user selama proses bot aktif.
+# Catatan: counter ini akan reset jika Railway restart/redeploy.
+MAX_CLAIMS_PER_USER = 5
+claim_counts = {}
+
+
+def claims_used(uid: int) -> int:
+    return claim_counts.get(uid, 0)
+
+
+def claims_remaining(uid: int) -> int:
+    return max(0, MAX_CLAIMS_PER_USER - claims_used(uid))
+
 
 def authorized(update: Update) -> bool:
     if ALLOWED_ID is None:
@@ -141,6 +154,17 @@ async def callback(
     action = query.data
 
     if action == "new":
+        used = claims_used(uid)
+
+        if used >= MAX_CLAIMS_PER_USER:
+            await query.message.reply_text(
+                "🚫 <b>Limit Klaim Tercapai</b>\n\n"
+                f"Setiap akun Telegram maksimal <b>{MAX_CLAIMS_PER_USER}x klaim sukses</b>.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=dashboard(),
+            )
+            return ConversationHandler.END
+
         old = drafts.pop(uid, None)
 
         if old and old.session:
@@ -152,7 +176,8 @@ async def callback(
         drafts[uid] = Draft()
 
         await query.message.reply_text(
-            "👤 <b>Kirim Nama Lengkap</b>",
+            "👤 <b>Kirim Nama Lengkap</b>\n\n"
+            f"Sisa klaim: <b>{claims_remaining(uid)}</b>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -162,7 +187,11 @@ async def callback(
         draft = drafts.get(uid)
 
         if not draft:
-            text = "Tidak ada proses klaim aktif."
+            text = (
+                "Tidak ada proses klaim aktif.\n\n"
+                f"📊 Klaim sukses: {claims_used(uid)}/{MAX_CLAIMS_PER_USER}\n"
+                f"Sisa klaim: {claims_remaining(uid)}"
+            )
 
         elif (
             draft.session
@@ -430,8 +459,14 @@ async def got_otp(
 
             return WAIT_OTP
 
+        # Tambah counter hanya setelah proses klaim benar-benar sukses.
+        claim_counts[uid] = claims_used(uid) + 1
+
         await update.effective_message.reply_text(
-            "✅ " + result,
+            "✅ " + result + "\n\n"
+            f"📊 Klaim sukses: <b>{claims_used(uid)}/{MAX_CLAIMS_PER_USER}</b>\n"
+            f"Sisa klaim: <b>{claims_remaining(uid)}</b>",
+            parse_mode=ParseMode.HTML,
             reply_markup=dashboard(),
         )
 
