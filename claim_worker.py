@@ -1,4 +1,4 @@
-import asyncio
+
 import os
 import random
 import re
@@ -58,6 +58,113 @@ async def get_visible_inputs(page):
         locator.nth(i)
         for i in range(count)
     ]
+
+
+async def _first_visible(locator):
+    """Return locator pertama yang benar-benar visible, atau None."""
+    try:
+        count = await locator.count()
+    except Exception:
+        return None
+
+    for i in range(count):
+        item = locator.nth(i)
+        try:
+            if await item.is_visible():
+                return item
+        except Exception:
+            continue
+
+    return None
+
+
+async def _field_by_hints(scope, hints):
+    """Cari field berdasarkan placeholder/name/aria-label, bukan urutan DOM."""
+    for hint in hints:
+        pattern = re.compile(hint, re.I)
+        candidates = [
+            scope.get_by_placeholder(pattern),
+            scope.get_by_label(pattern),
+        ]
+
+        # Selector atribut eksplisit lebih stabil untuk React/Next forms.
+        attr_candidates = [
+            scope.locator(f'input[placeholder*="{hint}" i]'),
+            scope.locator(f'input[name*="{hint}" i]'),
+            scope.locator(f'input[aria-label*="{hint}" i]'),
+        ]
+
+        for locator in candidates + attr_candidates:
+            item = await _first_visible(locator)
+            if item is not None:
+                return item
+
+    return None
+
+
+async def find_initial_form_fields(page):
+    """
+    XL sempat mengubah form sehingga mengandalkan input[0..2] tidak stabil.
+    Cari Nama/Email/WhatsApp berdasarkan semantic hints dan cek semua frame.
+    """
+    scopes = [page] + [frame for frame in page.frames if frame != page.main_frame]
+
+    for scope in scopes:
+        name_input = await _field_by_hints(
+            scope, ["Nama Lengkap", "nama lengkap", "full name", "nama"]
+        )
+        email_input = await _field_by_hints(
+            scope, ["Email", "email"]
+        )
+        whatsapp_input = await _field_by_hints(
+            scope, ["Nomor WhatsApp", "WhatsApp", "whatsapp", "nomor"]
+        )
+
+        if name_input is not None and email_input is not None and whatsapp_input is not None:
+            return name_input, email_input, whatsapp_input
+
+    # Fallback terakhir: ambil visible text-like inputs dan abaikan hidden/radio/checkbox.
+    for scope in scopes:
+        locator = scope.locator(
+            "input:visible:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit'])"
+        )
+        try:
+            count = await locator.count()
+        except Exception:
+            count = 0
+
+        if count >= 3:
+            return locator.nth(0), locator.nth(1), locator.nth(2)
+
+    # Diagnostic agar error Telegram jauh lebih berguna saat XL ubah UI lagi.
+    diagnostics = []
+    for idx, scope in enumerate(scopes):
+        try:
+            all_inputs = scope.locator("input")
+            total = await all_inputs.count()
+            visible = 0
+            attrs = []
+            for i in range(min(total, 12)):
+                item = all_inputs.nth(i)
+                try:
+                    if await item.is_visible():
+                        visible += 1
+                    attrs.append({
+                        "type": await item.get_attribute("type"),
+                        "name": await item.get_attribute("name"),
+                        "placeholder": await item.get_attribute("placeholder"),
+                        "aria": await item.get_attribute("aria-label"),
+                    })
+                except Exception:
+                    pass
+            diagnostics.append(f"scope={idx} total={total} visible={visible} attrs={attrs}")
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        "FORM_FAIL: field Nama Lengkap / Email / Nomor WhatsApp tidak terdeteksi. "
+        + " | ".join(diagnostics)
+    )
 
 
 async def click_lanjut(page):
@@ -336,23 +443,23 @@ async def start_claim(
         # ====================================================
         # FORM AWAL
         #
-        # 0 = Nama
-        # 1 = Email
-        # 2 = WhatsApp
+        # Jangan lagi mengandalkan urutan input[0..2]. XL dapat
+        # mengubah wrapper/DOM tanpa mengubah tampilan form.
+        # Screenshot terbaru tetap berisi:
+        # - Nama Lengkap
+        # - Email
+        # - Nomor WhatsApp
         # ====================================================
 
-        inputs = await get_visible_inputs(
-            page
-        )
+        try:
+            await page.get_by_text(
+                re.compile(r"Mulai\s+Isi\s+Data", re.I)
+            ).first.wait_for(state="visible", timeout=20000)
+        except Exception:
+            # Heading bukan syarat mutlak; lanjutkan ke pencarian field.
+            pass
 
-        if len(inputs) < 3:
-            raise RuntimeError(
-                f"FORM_FAIL: hanya menemukan {len(inputs)} input."
-            )
-
-        name_input = inputs[0]
-        email_input = inputs[1]
-        whatsapp_input = inputs[2]
+        name_input, email_input, whatsapp_input = await find_initial_form_fields(page)
 
         await name_input.click()
         await name_input.fill(
